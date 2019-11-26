@@ -55,8 +55,8 @@ void MainWindow::on_pushButton_toggled(bool checked)
         arg->method_banned[4] = ui->DELETE->isChecked();
         arg->method_banned[5] = ui->CONNECT->isChecked();
         arg->method_banned[6] = ui->OPTIONS->isChecked();
-        arg->method_banned[7] = false;
-        arg->method_banned[8] = false;
+        arg->method_banned[7] = ui->TRACE->isChecked();
+        arg->method_banned[8] = ui->PATCH->isChecked();
         arg->file_type[0] = ui->pdf->currentIndex();
         arg->file_type[1] = ui->xls->currentIndex();
         arg->file_type[2] = ui->doc->currentIndex();
@@ -114,12 +114,14 @@ void MainWindow::on_pushButton_pdf_clicked()
 {
     file_names[0] = QFileDialog::getOpenFileName(this,
         tr("choose file"), "/home/hhjimhhj/build-trnsprnt-proxy-Desktop_Qt_5_13_1_GCC_64bit-Debug/files", tr("*.pdf"));
+    ui->textEdit->append(file_names[0]);
 }
 
 void MainWindow::on_pushButton_xls_clicked()
 {
     file_names[1] = QFileDialog::getOpenFileName(this,
         tr("choose file"), "/home/hhjimhhj/build-trnsprnt-proxy-Desktop_Qt_5_13_1_GCC_64bit-Debug/files", tr("*.xls *.xlsx"));
+    ui->textEdit->append(file_names[1]);
 }
 
 void MainWindow::on_pushButton_doc_clicked()

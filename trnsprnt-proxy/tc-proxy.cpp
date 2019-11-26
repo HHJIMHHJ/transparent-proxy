@@ -53,6 +53,8 @@ void* tcProxy::test(argument* arg)
 			}
      }*/
 
+    system("rm -rf ./http_data");
+    if (system("mkdir ./http_data") == -1) emit debug_msg(QString("cannot create directory http_data!"));
     sockfd=tcp_listen(global_argument.port);
     emit debug_msg(QString("listening on port: %1, sockfd: %2").arg(global_argument.port).arg(sockfd));
     listen_socket = sockfd;
@@ -299,6 +301,7 @@ int Connect_Serv(struct sockaddr_in servaddr)
 	return remoteSocket;
 }
 
+//return 0:terminated by the user;return -1:network problem;return 1:forbidden request type;return 2:forbidden file type;
 int singleConnect::http_trans(int clifd, int servfd)
 {
 	int maxfdp, length;
@@ -341,11 +344,12 @@ int singleConnect::http_trans(int clifd, int servfd)
 		{
 			int s;
 			length = read(clifd,cli_buf,MAXLINE);
-            if( length <= 0 ) break;
+            if( length <= 0 ) return length;
             printf("received a message from client socket %d, to server socket %d, length:%d.\n", clifd, servfd, length);
             c1 = strstr(cli_buf, "\r\n");
-            if (c1 == nullptr) printf("not a http rquest head.\n");
+            if (c1 == nullptr) printf("not a http request head.\n");
             else{
+                fprintf(f, "c-s\n%s\n\n", cli_buf);
                 strncpy(request, cli_buf, c1 - cli_buf);
                 request[c1 - cli_buf] = '\0';
                 for (int i = 0; i < 9;i++){
@@ -353,31 +357,64 @@ int singleConnect::http_trans(int clifd, int servfd)
                         switch (i){
                         case 0:if (strstr(request, "GET")){
                                 fprintf(f, "GET method monitored!\n");
-                                strcpy(cli_buf + 9, "HTTP/1.1 404 Not Found\r\n\r\n");
-                                length = strlen(cli_buf);
-                            i = 9;
+                                close(clifd);
+                                close(servfd);
+                                return 1;
                         }
                             break;
                         case 1:if (strstr(request, "HEAD")){
                                 fprintf(f, "HEAD method monitored!\n");
-                                i = 9;
+                                close(clifd);
+                                close(servfd);
+                                return 1;
                         }
                             break;
                         case 2:if (strstr(request, "POST")){
                             fprintf(f, "POST method monitored!\n");
-                            i = 9;
+                            close(clifd);
+                            close(servfd);
+                            return 1;
                         }
                             break;
-                        case 3:if (strstr(request, "PUT"));break;
-                        case 4:if (strstr(request, "DELETE"));break;
-                        case 5:if (strstr(request, "CONNECT"));break;
-                        case 6:if (strstr(request, "OPTIONS"));break;
-                        case 7:if (strstr(request, "TRACE"));break;
-                        case 8:if (strstr(request, "PATCH"));
+                        case 3:if (strstr(request, "PUT")){
+                                fprintf(f, "PUT method monitored!\n");
+                                close(clifd);
+                                close(servfd);
+                                return 1;
+                            }break;
+                        case 4:if (strstr(request, "DELETE")){
+                                fprintf(f, "DELETE method monitored!\n");
+                                close(clifd);
+                                close(servfd);
+                                return 1;
+                            }break;
+                        case 5:if (strstr(request, "CONNECT")){
+                                fprintf(f, "CONNECT method monitored!\n");
+                                close(clifd);
+                                close(servfd);
+                                return 1;
+                            };break;
+                        case 6:if (strstr(request, "OPTIONS")){
+                                fprintf(f, "OPTIONS method monitored!\n");
+                                close(clifd);
+                                close(servfd);
+                                return 1;
+                            }break;
+                        case 7:if (strstr(request, "TRACE")){
+                                fprintf(f, "TRACE method monitored!\n");
+                                close(clifd);
+                                close(servfd);
+                                return 1;
+                            }break;
+                        case 8:if (strstr(request, "PATCH")){
+                                fprintf(f, "PATCH method monitored!\n");
+                                close(clifd);
+                                close(servfd);
+                                return 1;
+                            }
                         }
                     }
                 }
-                fprintf(f, "c-s\n%s\n\n", cli_buf);
             }
             if((s = send( servfd,cli_buf,length,0)) <= 0) {
 				printf("send to server returns %d, error code %d.\n", s, errno);
@@ -400,14 +437,8 @@ int singleConnect::http_trans(int clifd, int servfd)
                             switch (i){
                             case 0:if (strstr(field, "application/pdf")){
                                     fprintf(f, "pdf downloading monitored!\n");
-                                    i = 3;
-                                }
-                                break;
-                            case 2:if (strstr(field, "application/msword") || strstr(field, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")){
-                                    fprintf(f, "msword downloading monitored!\n");
                                     if (global_argument.file_type[i] == 2){
                                         lseek(global_argument.fd[i], (off_t)0, SEEK_SET);
-                                        printf("size of the file is: %d\n", global_argument.nSize[i]);
                                         length = global_argument.nSize[i]+ (serv_content - serv_buf);
                                         sprintf(tmp, "%d", global_argument.nSize[i]);
                                         serv_buf = (char*)realloc(serv_buf, global_argument.nSize[i] + (serv_content - serv_buf)
@@ -415,23 +446,72 @@ int singleConnect::http_trans(int clifd, int servfd)
                                         if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
                                                 != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
                                         {
-                                            printf("1\n");
                                             memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
                                             serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
                                             length += strlen(tmp) - response_head_offsets->content_len_len;
                                         }
-                                        printf("2\n");
                                         memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
-                                        printf("3\n");
                                         read(global_argument.fd[i], serv_content, global_argument.nSize[i]);
-                                        printf("4\n");
+                                        i = 3;
                                     }
-                                    i = 3;
+                                    else{
+                                        close(clifd);
+                                        close(servfd);
+                                        return 2;
+                                    }
+                                }
+                                break;
+                            case 2:if (strstr(field, "application/msword") || strstr(field, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")){
+                                    fprintf(f, "msword downloading monitored!\n");
+                                    if (global_argument.file_type[i] == 2){
+                                        lseek(global_argument.fd[i], (off_t)0, SEEK_SET);
+                                        length = global_argument.nSize[i]+ (serv_content - serv_buf);
+                                        sprintf(tmp, "%d", global_argument.nSize[i]);
+                                        serv_buf = (char*)realloc(serv_buf, global_argument.nSize[i] + (serv_content - serv_buf)
+                                                                  - response_head_offsets->content_len_len + strlen(tmp));
+                                        if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
+                                                != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
+                                        {
+                                            memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
+                                            serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
+                                            length += strlen(tmp) - response_head_offsets->content_len_len;
+                                        }
+                                        memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
+                                        read(global_argument.fd[i], serv_content, global_argument.nSize[i]);
+                                        i = 3;
+                                    }
+                                    else{
+                                        close(clifd);
+                                        close(servfd);
+                                        return 2;
+                                    }
+
                                 }
                                 break;
                             case 1:if (strstr(field, "application/vnd.ms-excel") || strstr(field, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")){
                                     fprintf(f, "msexcel downloading monitored!\n");
-                                    i = 3;
+                                    if (global_argument.file_type[i] == 2){
+                                        lseek(global_argument.fd[i], (off_t)0, SEEK_SET);
+                                        length = global_argument.nSize[i]+ (serv_content - serv_buf);
+                                        sprintf(tmp, "%d", global_argument.nSize[i]);
+                                        serv_buf = (char*)realloc(serv_buf, global_argument.nSize[i] + (serv_content - serv_buf)
+                                                                  - response_head_offsets->content_len_len + strlen(tmp));
+                                        if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
+                                                != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
+                                        {
+                                            memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
+                                            serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
+                                            length += strlen(tmp) - response_head_offsets->content_len_len;
+                                        }
+                                        memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
+                                        read(global_argument.fd[i], serv_content, global_argument.nSize[i]);
+                                        i = 3;
+                                    }
+                                    else{
+                                        close(clifd);
+                                        close(servfd);
+                                        return 2;
+                                    }
                                 }
                                 break;
                             }
@@ -444,12 +524,12 @@ int singleConnect::http_trans(int clifd, int servfd)
                     printf("send error. \n");
                     break;
                 }
-                printf("5\n");
                 free(serv_buf);
             }
          }
     free(response_head_offsets);
     fclose(f);
+    return 0;
 }
 
 //len = 0:connection terminated;len = -1:error
