@@ -16,7 +16,7 @@
 #define LISTENQ 10
 #define MAXLINE 4096
 
-#define DNS_SERVER "192.168.72.2"
+#define DNS_SERVER "192.168.1.1"
 
 int Connect_Serv(struct sockaddr_in);
 int tcp_listen(int);
@@ -71,6 +71,8 @@ void* tcProxy::test(argument* arg)
                     ioctl(connfd, FIONBIO, (char*)&nonblocked);
                     emit debug_msg(QString("connection with client established, client ip: %1, port: %2, fd: %3")
                                    .arg(inet_ntoa(cli_addr.sin_addr)).arg(ntohs(cli_addr.sin_port)).arg(connfd));
+                    getsockname(connfd, (struct sockaddr *)&cli_addr, &sin_size);
+                    emit debug_msg(QString("socket port: %1, socket ip: %2").arg(ntohs(cli_addr.sin_port)).arg(inet_ntoa(cli_addr.sin_addr)));
                     emit start_single_connect(connfd);
                 }
 				else
@@ -93,7 +95,7 @@ void singleConnect::run(){
 	}
 
 	/*DNS service*/
-	if (ntohs(servaddr.sin_port) == 53){
+    /*if (ntohs(servaddr.sin_port) == 53){
 
         if( dns_trans(clifd) == -1){
             emit debug_msg(QString("DNS failed."));
@@ -101,9 +103,10 @@ void singleConnect::run(){
         }
 
         return;
-	}
+    }
 
-	else {
+    else{*/
+
 		if (checkserver(servaddr.sin_addr.s_addr) == -1){
 			close(clifd);
             return;
@@ -118,35 +121,83 @@ void singleConnect::run(){
         close(servfd);
         close(clifd);
         return;
-    }
+
 }
 
-int dns_trans(){
-    struct sockaddr_in dns_addr;
+void dns::dns_trans(){
+    struct sockaddr_in local_addr;
     struct sockaddr_in client_addr;
+    struct sockaddr_in dns_addr;
+    struct sockaddr_in tmp_addr;
     int len;
+    int on = 1;
+
     socklen_t namelen = sizeof(sockaddr_in);
-    dns_addr.sin_addr.s_addr = INADDR_ANY;
+    local_addr.sin_addr.s_addr = inet_addr(lan_ip);
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(port);
+
+    unsigned int server_ip_net = inet_addr(dns_ip);
+    dns_addr.sin_addr.s_addr = server_ip_net;
     dns_addr.sin_family = AF_INET;
-    dns_addr.sin_port = htons(global_argument.port);
+    dns_addr.sin_port = htons(53);
+
+    unsigned int client_ip_net = inet_addr(client_ip);
+    client_addr.sin_addr.s_addr = client_ip_net;
+    client_addr.sin_family = AF_INET;
+
     char buf[MAXLINE];
+    unsigned short client_port;
 
     int dnsfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if(bind(dnsfd, (struct sockaddr *)&dns_addr, namelen) < 0) return -1;
+    setsockopt(dnsfd, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
+    if(bind(dnsfd, (struct sockaddr *)&local_addr, namelen) < 0) {
+        emit error_msg(QString("dns binding failed!!!"));
+        close(dnsfd);
+        return;
+    }
+    local_addr.sin_addr.s_addr = inet_addr(wan_ip);
+    int servfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if(bind(servfd, (struct sockaddr *)&local_addr, namelen) < 0) {
+        emit error_msg(QString("dns binding failed!!!"));
+        close(dnsfd);
+        close(servfd);
+        return;
+    }
+    ::connect(servfd, (struct sockaddr *)&dns_addr, namelen);
+    printf("dns service started\n");
     int nonblocked = 1;
     ioctl(dnsfd, FIONBIO, (char*)&nonblocked);
-    while(true){
-        if ((len = recvfrom(dnsfd, buf, MAXLINE, 0, (struct sockaddr *)&dns_addr, &namelen)) == -1)continue;
-        if (dns_addr.sin_addr.s_addr == inet_addr(global_argument.client_ip)){
-            client_addr = dns_addr;
-            dns_addr.sin_addr.s_addr = inet_addr(DNS_SERVER);
-            dns_addr.sin_port = htons(53);
-            if (sendto(dnsfd, buf, len, 0, (struct sockaddr *)&dns_addr, namelen) < 0) return -1;
+    while(flag){
+        //printf("loop\n");
+        if ((len = recvfrom(dnsfd, buf, MAXLINE, 0, (struct sockaddr *)&tmp_addr, &namelen)) == -1)continue;
+        printf("%d\n", len);
+        if (tmp_addr.sin_addr.s_addr == client_ip_net){
+            if (send(servfd, buf, len, 0) < 0) {
+                emit error_msg(QString("dns send to server failed!!!"));
+                close(dnsfd);
+                close(servfd);
+                return;
+            }
+            if ((len = read(servfd, buf, MAXLINE)) < 0){
+                emit error_msg(QString("dns recv from server failed!!!"));
+                close(dnsfd);
+                close(servfd);
+                return;
+            }
+            client_addr.sin_port = tmp_addr.sin_port;
+            if (sendto(dnsfd, buf, len, 0, (struct sockaddr *)&client_addr, namelen) < 0){
+                emit error_msg(QString("dns send to client failed!!!"));
+                close(dnsfd);
+                close(servfd);
+                return;
+            }
         }
-        else if (dns_addr.sin_addr.s_addr == inet_addr(DNS_SERVER)){
-            if (sendto(dnsfd, buf, len, 0, (struct sockaddr *)&client_addr, namelen) < 0) return -1;
-        }
+        else emit debug_msg(QString("authentication failed"));
     }
+    close(dnsfd);
+    close(servfd);
+    return;
 }
 
 int singleConnect::dns_trans(int clifd)

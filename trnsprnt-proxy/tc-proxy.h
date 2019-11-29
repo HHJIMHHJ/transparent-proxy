@@ -11,8 +11,8 @@
 struct argument
 {
 public:
-    int port;
-    char client_ip[15];
+    unsigned short port;
+    char client_ip[16];
     char** websites;
     int website_num;
 
@@ -38,6 +38,23 @@ private:
 signals:
     void* debug_msg(QString);
     void* start_single_connect(int);
+};
+
+class dns: public QObject
+{
+    Q_OBJECT
+public:
+    unsigned short port;
+    char client_ip[16];
+    char lan_ip[16];
+    char wan_ip[16];
+    char dns_ip[16];
+    bool flag;
+public slots:
+    void dns_trans();
+signals:
+    void* debug_msg(QString);
+    void error_msg(QString);
 };
 
 class singleConnect: public QThread

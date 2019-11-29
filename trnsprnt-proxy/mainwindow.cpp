@@ -13,6 +13,9 @@ MainWindow::MainWindow(QWidget *parent, int argc, char** argv)
                           "www.sjtu.edu.cn|www.tianya.cn|bbs.sjtu.edu.cn|www.xinhuanet.com");
     ui->client_IP->setText("192.168.88.2");
     ui->listen_port->setText("8888");
+    ui->dns_ip->setText("192.168.1.1");
+    ui->lan_ip->setText("192.168.88.1");
+    ui->wan_ip->setText("192.168.1.113");
     QStringList string_list;
     string_list<<"allowed"<<"banned"<<"replace";
     ui->pdf->addItems(string_list);
@@ -20,10 +23,16 @@ MainWindow::MainWindow(QWidget *parent, int argc, char** argv)
     ui->xls->addItems(string_list);
     tc_proxy = new tcProxy;
     tc_proxy->moveToThread(&tc_proxy_thread);
+    dns_trans = new dns;
+    dns_trans->moveToThread(&dns_trans_thread);
     connect(this, &MainWindow::start_proxy, tc_proxy, &tcProxy::test);
     connect(tc_proxy, &tcProxy::debug_msg, this, &MainWindow::print);
     connect(tc_proxy, &tcProxy::start_single_connect, this, &MainWindow::create_single_connect);
+    connect(this, &MainWindow::start_proxy, dns_trans, &dns::dns_trans);
+    connect(dns_trans, &dns::debug_msg, this, &MainWindow::print);
+    connect(dns_trans, &dns::error_msg, this, &MainWindow::error_handle);
     tc_proxy_thread.start();
+    dns_trans_thread.start();
 }
 
 MainWindow::~MainWindow()
@@ -34,6 +43,7 @@ MainWindow::~MainWindow()
 void MainWindow::on_pushButton_toggled(bool checked)
 {
     if (checked){
+        //pass argument to main thread
         argument* arg = new argument;
 
         QStringList tmp = ui->website->text().split('|');
@@ -83,11 +93,22 @@ void MainWindow::on_pushButton_toggled(bool checked)
             }
         }
         tc_proxy->flag = true;
+        //pass argument to dns thread
+        strcpy(dns_trans->client_ip, arg->client_ip);
+        dns_trans->port = arg->port;
+        tmp2 = ui->lan_ip->text().toStdString();
+        memcpy(dns_trans->lan_ip, tmp2.c_str(), tmp2.size() + 1);
+        tmp2 = ui->wan_ip->text().toStdString();
+        memcpy(dns_trans->wan_ip, tmp2.c_str(), tmp2.size() + 1);
+        tmp2 = ui->dns_ip->text().toStdString();
+        memcpy(dns_trans->dns_ip, tmp2.c_str(), tmp2.size() + 1);
+        dns_trans->flag = true;
         singleConnect::running = true;
         emit start_proxy(arg);
     }
     else {
         tc_proxy->flag = false;
+        dns_trans->flag = false;
         singleConnect::running = false;
     }
 }
@@ -147,4 +168,10 @@ void MainWindow::on_doc_currentIndexChanged(int index)
 {
     if (index == 2) ui->pushButton_doc->setEnabled(true);
     else ui->pushButton_doc->setEnabled(false);
+}
+
+void MainWindow::error_handle(QString msg)
+{
+    ui->textEdit->append(msg);
+    ui->pushButton->setChecked(false);
 }

@@ -36,11 +36,14 @@ private slots:
     void on_xls_currentIndexChanged(int index);
 
     void on_doc_currentIndexChanged(int index);
+    void error_handle(QString);
 
 private:
     Ui::MainWindow *ui;
     QThread tc_proxy_thread;
+    QThread dns_trans_thread;
     tcProxy* tc_proxy;
+    dns* dns_trans;
     QVector<QThread*> single_connect_threads;
     QString file_names[3];
 signals:
