@@ -11,116 +11,85 @@
 #include <sys/select.h>
 #include <linux/netfilter_ipv4.h>
 #include <sys/ioctl.h>
+#include <QMap>
 #include "tc-proxy.h"
 
 #define LISTENQ 10
 #define MAXLINE 4096
 
-#define DNS_SERVER "192.168.1.1"
-
 int Connect_Serv(struct sockaddr_in);
 int tcp_listen(int);
 int checkclient(in_addr_t);
+int get_client_ip_inet();
 
-static struct argument global_argument;
-bool singleConnect::running = true;
+QVector<unsigned int> allowed_ip_address;
+unsigned int* client_ip_inet;
+extern argument arg;
 
-void* tcProxy::test(argument* arg)
+void* tcProxy::main_thread()
 {
-	struct sockaddr_in cli_addr;
-	socklen_t sin_size = sizeof(struct sockaddr_in);
+    struct sockaddr_in cli_addr;
+    socklen_t sin_size = sizeof(struct sockaddr_in);
     int connfd,sockfd;
-    int port;
 
-    flag = true;
-    global_argument = *arg;
-    free(arg);
-    /*if (argc!=3){
-        printf("Usage: %s -p port\n", argv[0]);
-        return nullptr;
-    }
-
-    optind = 1;
-
-	while( (opt = getopt(argc, argv, "p:")) != EOF) {
-			switch(opt) {
-				case 'p':
-					port = (short) atoi(optarg);
-					break;
-				default:
-					printf("Usage: %s -p port\n", argv[0]);
-                    return nullptr;
-			}
-     }*/
+    if (get_allowed_ip_list() == -1)return NULL;
+    if (get_client_ip_inet() == -1) return NULL;
 
     system("rm -rf ./http_data");
     if (system("mkdir ./http_data") == -1) emit debug_msg(QString("cannot create directory http_data!"));
-    sockfd=tcp_listen(global_argument.port);
-    emit debug_msg(QString("listening on port: %1, sockfd: %2").arg(global_argument.port).arg(sockfd));
+    sockfd=tcp_listen(arg.port);
+    emit debug_msg(QString("listening on port: %1, sockfd: %2").arg(arg.port).arg(sockfd));
     listen_socket = sockfd;
 
     int nonblocked = 1;
     ioctl(sockfd, FIONBIO, (char*)&nonblocked);
-    while(flag){
-				connfd=accept(sockfd,(struct sockaddr *)&cli_addr, &sin_size);
-				if(connfd<0) {
-				    continue;
-				}
-                if (checkclient(cli_addr.sin_addr.s_addr) == 1){
-                    nonblocked = 0;
-                    ioctl(connfd, FIONBIO, (char*)&nonblocked);
-                    emit debug_msg(QString("connection with client established, client ip: %1, port: %2, fd: %3")
-                                   .arg(inet_ntoa(cli_addr.sin_addr)).arg(ntohs(cli_addr.sin_port)).arg(connfd));
-                    getsockname(connfd, (struct sockaddr *)&cli_addr, &sin_size);
-                    emit debug_msg(QString("socket port: %1, socket ip: %2").arg(ntohs(cli_addr.sin_port)).arg(inet_ntoa(cli_addr.sin_addr)));
-                    emit start_single_connect(connfd);
-                }
-				else
-					close(connfd);
-    	}
+    while(arg.flag){
+        connfd=accept(sockfd,(struct sockaddr *)&cli_addr, &sin_size);
+        if(connfd<0) {
+            continue;
+        }
+        if (!checkclient(cli_addr.sin_addr.s_addr)){
+            nonblocked = 0;
+            ioctl(connfd, FIONBIO, (char*)&nonblocked);
+            emit debug_msg(QString("connection with client established, client ip: %1, port: %2, fd: %3")
+                           .arg(inet_ntoa(cli_addr.sin_addr)).arg(ntohs(cli_addr.sin_port)).arg(connfd));
+            getsockname(connfd, (struct sockaddr *)&cli_addr, &sin_size);
+            emit debug_msg(QString("socket port: %1, socket ip: %2").arg(ntohs(cli_addr.sin_port)).arg(inet_ntoa(cli_addr.sin_addr)));
+            emit start_single_connect(connfd);
+        }
+        else
+            close(connfd);
+    }
     close(listen_socket);
+    delete [] client_ip_inet;
     emit debug_msg(QString("transparent proxy terminated"));
     return nullptr;
 }
 
 void singleConnect::run(){
     int servfd;
-	struct sockaddr_in servaddr;
-	socklen_t servlen=sizeof(struct sockaddr_in);
+    struct sockaddr_in servaddr;
+    socklen_t servlen=sizeof(struct sockaddr_in);
 
-	if ( (getsockopt(clifd,SOL_IP,SO_ORIGINAL_DST,&servaddr,&servlen)) != 0 ){
-		close(clifd);
+    if ( (getsockopt(clifd,SOL_IP,SO_ORIGINAL_DST,&servaddr,&servlen)) != 0 ){
+        close(clifd);
         emit debug_msg(QString("Could not recognize the client."));
         return;
-	}
-
-	/*DNS service*/
-    /*if (ntohs(servaddr.sin_port) == 53){
-
-        if( dns_trans(clifd) == -1){
-            emit debug_msg(QString("DNS failed."));
-            return;
-        }
-
+    }
+    if (checkserver(servaddr.sin_addr.s_addr) == -1){
+        close(clifd);
+        return;
+    }
+    if ((servfd = Connect_Serv(servaddr)) == -1){
         return;
     }
 
-    else{*/
-
-		if (checkserver(servaddr.sin_addr.s_addr) == -1){
-			close(clifd);
-            return;
-		}
-		if ((servfd = Connect_Serv(servaddr)) == -1){
-            return;
-		}
-	
-        emit debug_msg(QString("connection with server established, server ip: %1, port: %2, fd: %3")
-                       .arg(inet_ntoa(servaddr.sin_addr)).arg(ntohs(servaddr.sin_port)).arg(servfd));
-        http_trans(clifd,servfd);
-        close(servfd);
-        close(clifd);
-        return;
+    emit debug_msg(QString("connection with server established, server ip: %1, port: %2, fd: %3")
+                   .arg(inet_ntoa(servaddr.sin_addr)).arg(ntohs(servaddr.sin_port)).arg(servfd));
+    http_trans(clifd,servfd);
+    close(servfd);
+    close(clifd);
+    return;
 
 }
 
@@ -131,23 +100,26 @@ void dns::dns_trans(){
     struct sockaddr_in tmp_addr;
     int len;
     int on = 1;
+    int nonblocked = 1;
+
+    QMap<unsigned short, sockaddr_in> transaction_list;
+    unsigned short* tmp;
+
+    tmp = new unsigned short;
 
     socklen_t namelen = sizeof(sockaddr_in);
     local_addr.sin_addr.s_addr = inet_addr(lan_ip);
     local_addr.sin_family = AF_INET;
-    local_addr.sin_port = htons(port);
+    local_addr.sin_port = htons(arg.port);
 
     unsigned int server_ip_net = inet_addr(dns_ip);
     dns_addr.sin_addr.s_addr = server_ip_net;
     dns_addr.sin_family = AF_INET;
     dns_addr.sin_port = htons(53);
 
-    unsigned int client_ip_net = inet_addr(client_ip);
-    client_addr.sin_addr.s_addr = client_ip_net;
     client_addr.sin_family = AF_INET;
 
     char buf[MAXLINE];
-    unsigned short client_port;
 
     int dnsfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     setsockopt(dnsfd, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
@@ -166,199 +138,174 @@ void dns::dns_trans(){
     }
     ::connect(servfd, (struct sockaddr *)&dns_addr, namelen);
     printf("dns service started\n");
-    int nonblocked = 1;
     ioctl(dnsfd, FIONBIO, (char*)&nonblocked);
-    while(flag){
+    ioctl(servfd, FIONBIO, (char*)&nonblocked);
+    while(arg.flag){
         //printf("loop\n");
-        if ((len = recvfrom(dnsfd, buf, MAXLINE, 0, (struct sockaddr *)&tmp_addr, &namelen)) == -1)continue;
-        printf("%d\n", len);
-        if (tmp_addr.sin_addr.s_addr == client_ip_net){
-            if (send(servfd, buf, len, 0) < 0) {
-                emit error_msg(QString("dns send to server failed!!!"));
-                close(dnsfd);
-                close(servfd);
-                return;
+        if ((len = recvfrom(dnsfd, buf, MAXLINE, 0, (struct sockaddr *)&tmp_addr, &namelen)) > 0){
+            //printf("%d\n", len);
+            for (int i = 0;i < arg.client_ip_num;i++){
+                if (tmp_addr.sin_addr.s_addr == client_ip_inet[i]){
+                    memcpy(tmp, buf, 2);
+                    transaction_list.insert(*tmp, tmp_addr);
+                    printf("transaction:%hu, client:%u, port:%hu created\n", *tmp, tmp_addr.sin_addr.s_addr, tmp_addr.sin_port);
+                    if (send(servfd, buf, len, 0) < 0) {
+                        emit error_msg(QString("dns send to server failed!"));
+                        close(dnsfd);
+                        close(servfd);
+                        return;
+                    }
+                }
+                else emit debug_msg(QString("dns authentication failed!"));
             }
-            if ((len = read(servfd, buf, MAXLINE)) < 0){
-                emit error_msg(QString("dns recv from server failed!!!"));
-                close(dnsfd);
-                close(servfd);
-                return;
-            }
-            client_addr.sin_port = tmp_addr.sin_port;
+        }
+        if((len = read(servfd, buf, MAXLINE)) > 0){
+            printf("server dns response recieved\n");
+            memcpy(tmp, buf, 2);
+            client_addr = transaction_list[*tmp];
+            printf("transaction:%hu, client:%u, port:%hu deleted\n", *tmp, tmp_addr.sin_addr.s_addr, tmp_addr.sin_port);
+            transaction_list.remove(*tmp);
             if (sendto(dnsfd, buf, len, 0, (struct sockaddr *)&client_addr, namelen) < 0){
-                emit error_msg(QString("dns send to client failed!!!"));
+                emit error_msg(QString("dns send to client failed!"));
                 close(dnsfd);
                 close(servfd);
                 return;
             }
         }
-        else emit debug_msg(QString("authentication failed"));
     }
     close(dnsfd);
     close(servfd);
     return;
 }
 
-int singleConnect::dns_trans(int clifd)
-{
-    struct sockaddr_in servaddr;
-    char cli_buf[MAXLINE];
-    char dns_buf[MAXLINE];
-    int cli_length, dns_length;
-    socklen_t namelen;
-    int maxfdp;
-    fd_set rset;
-    struct timeval tv;
-
-    tv.tv_sec = 1;
-    tv.tv_usec = 0;
-
-
-    memset(&servaddr, 0, sizeof(servaddr));
-
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = inet_addr(DNS_SERVER);
-    servaddr.sin_port = htons(53);
-    namelen = sizeof(servaddr);
-    int dnsfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    ::connect(dnsfd, (struct sockaddr *)&servaddr, namelen);
-    maxfdp=(clifd>=dnsfd?clifd:dnsfd ) + 1;
-
-    emit debug_msg(QString("resolving domain name."));
-    while (running){
-
-        FD_ZERO(&rset);
-        FD_SET( clifd,&rset );
-        FD_SET( dnsfd,&rset );
-
-        if(select( maxfdp,&rset,nullptr,nullptr,&tv ) <= 0){
-            //printf("server error.\n");
-            continue;
-        }
-        if (FD_ISSET(clifd, &rset)){
-            cli_length = read(clifd, cli_buf, MAXLINE);
-            if (cli_length <= 0) return 0;
-            dns_length = cli_length - 2;
-            memcpy(dns_buf, cli_buf + 2, dns_length);
-            //printf("received dns message from client\n");
-            if (send(dnsfd, dns_buf, dns_length, 0) < 0) return -1;
-        }
-        if (FD_ISSET(dnsfd, &rset)){
-            dns_length = read(dnsfd, dns_buf, MAXLINE);
-            //printf("dns length:%d\n", dns_length);
-            memcpy(cli_buf + 2, dns_buf, dns_length);
-            char tmp[4];
-            memcpy(tmp, &dns_length, 4);
-            cli_buf[0] = tmp[1];
-            cli_buf[1] = tmp[0];
-            //printf("%d %d\n", cli_buf[0], cli_buf[1]);
-            cli_length = dns_length + 2;
-            if (send(clifd, cli_buf, cli_length, 0) < 0) return -1;
-        }
-    }
-    close(clifd);
-    close(dnsfd);
-}
-
-
 int tcp_listen(int port)
 {
-	struct sockaddr_in cl_addr,proxyserver_addr;
-	socklen_t sin_size = sizeof(struct sockaddr_in);
-	int sockfd, accept_sockfd, on = 1;
+    struct sockaddr_in cl_addr,proxyserver_addr;
+    socklen_t sin_size = sizeof(struct sockaddr_in);
+    int sockfd, accept_sockfd, on = 1;
 
-	
-	memset(&proxyserver_addr, 0, sizeof(proxyserver_addr));							
-	proxyserver_addr.sin_family = AF_INET;
-	proxyserver_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	proxyserver_addr.sin_port = htons(port);
+
+    memset(&proxyserver_addr, 0, sizeof(proxyserver_addr));
+    proxyserver_addr.sin_family = AF_INET;
+    proxyserver_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    proxyserver_addr.sin_port = htons(port);
 
     sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (sockfd < 0) {
-		printf("Socket failed...Abort...\n");
-		return -1;
-	}
-	
+    if (sockfd < 0) {
+        printf("Socket failed...Abort...\n");
+        return -1;
+    }
+
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
 
-	if (bind(sockfd, (struct sockaddr *) &proxyserver_addr, sizeof(proxyserver_addr)) < 0) {
-		printf("Bind failed...Abort...\n");
-		return -1;
-	}
-	if (listen(sockfd, LISTENQ) < 0) {
-		printf("Listen failed...Abort...\n");
-		return -1;
-	}
-	return sockfd;
+    if (bind(sockfd, (struct sockaddr *) &proxyserver_addr, sizeof(proxyserver_addr)) < 0) {
+        printf("Bind failed...Abort...\n");
+        return -1;
+    }
+    if (listen(sockfd, LISTENQ) < 0) {
+        printf("Listen failed...Abort...\n");
+        return -1;
+    }
+    return sockfd;
 }
 
-int singleConnect::checkserver(unsigned int serv_addr) {
-	struct hostent *hostinfo;
+//return 0;normal;return -1:host dns failed
+int tcProxy::get_allowed_ip_list(){
+    struct hostent *hostinfo;
     unsigned int** allowedip_list;
     struct in_addr s;
-    for (int i = 0; i < global_argument.website_num; i++){
+    allowed_ip_address.clear();
+    for (int i = 0; i < arg.website_num; i++){
         int j = 0;
-        hostinfo = gethostbyname(global_argument.websites[i]);
+        hostinfo = gethostbyname(arg.websites[i]);
+        if (hostinfo == NULL) {
+            emit error_msg(QString("gethostbyname failed!"));
+            return -1;
+        }
+        printf("website: %s\n", arg.websites[i]);
         allowedip_list = (unsigned int** )hostinfo->h_addr_list;
         while (allowedip_list[j] != nullptr){
+            allowed_ip_address.append(*allowedip_list[j]);
             s.s_addr = *allowedip_list[j];
-            //printf("%s ",inet_ntoa(s));
-            s.s_addr = serv_addr;
-            //printf("%s\n",inet_ntoa(s));
-            if (*(allowedip_list[j]) == serv_addr){
-                emit debug_msg(QString("Server IP authentication passed !"));
-                return 1;
-            }
+            printf("%s\n",inet_ntoa(s));
             j++;
         }
     }
-    emit debug_msg(QString("Server IP authentication failed !"));
-	return -1;
+    return 0;
 }
 
-int tcProxy::checkclient(unsigned int cli_addr) {
-	int allowedip;
-    inet_aton(global_argument.client_ip,(struct in_addr *)&allowedip);
-    struct in_addr in_cli_addr;
-    in_cli_addr.s_addr = cli_addr;
-	if (allowedip == cli_addr)	{
-        emit debug_msg(QString("Client IP authentication passed ! "));
-        return 1;
-	}
-	else{
-        emit debug_msg(QString("Client IP authentication failed !"));
-        emit debug_msg(QString("client IP: %1, allowed IP: %2").arg(inet_ntoa(in_cli_addr)).arg(global_argument.client_ip));
-		return -1;
-	}
+int tcProxy::get_client_ip_inet(){
+    struct in_addr tmp;
+    client_ip_inet = new unsigned int[arg.client_ip_num];
+    for (int i = 0; i < arg.client_ip_num;i++){
+        if (!inet_aton(arg.client_ip_list[i], &tmp)) {
+            emit error_msg(QString("Invalid client address!"));
+            return -1;
+        }
+        client_ip_inet[i] = tmp.s_addr;
+    }
+    return 0;
 }
+
+//return 0:passed;return -1:failed
+int singleConnect::checkserver(unsigned int serv_addr) {
+    struct in_addr s;
+    for (int i = 0; i < allowed_ip_address.length(); i++){
+        if (allowed_ip_address[i] == serv_addr){
+            s.s_addr = serv_addr;
+            printf("%s\n",inet_ntoa(s));
+            emit debug_msg(QString("Server IP authentication passed!"));
+            return 0;
+        }
+    }
+    s.s_addr = serv_addr;
+    emit debug_msg(QString("Server IP authentication failed!"));
+    emit debug_msg(QString("Server IP: %1").arg(inet_ntoa(s)));
+    return -1;
+}
+
+//return 0:passed;return -1:failed
+int tcProxy::checkclient(unsigned int cli_addr) {
+    struct in_addr s;
+    for (int i = 0;i < arg.client_ip_num;i++){
+        if (client_ip_inet[i] == cli_addr)	{
+            emit debug_msg(QString("Client IP authentication passed ! "));
+            return 0;
+        }
+    }
+    s.s_addr = cli_addr;
+    emit debug_msg(QString("Client IP authentication failed !"));
+    emit debug_msg(QString("Client IP: %1").arg(inet_ntoa(s)));
+    return -1;
+}
+
 
 
 int Connect_Serv(struct sockaddr_in servaddr)
 {
-	int cnt_stat, remoteSocket;
+    int cnt_stat, remoteSocket;
 
-	remoteSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (remoteSocket < 0) {
-		printf("Cannot establish socket.\n");
-		return -1;
-	}
-	servaddr.sin_family= AF_INET;
-	cnt_stat = connect(remoteSocket, (struct sockaddr *) &servaddr, sizeof(servaddr));
-	if (cnt_stat < 0) {
-		printf("Remote connect failed.\n");
-		return -1;
-	}
-	return remoteSocket;
+    remoteSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (remoteSocket < 0) {
+        printf("Cannot establish socket.\n");
+        return -1;
+    }
+    servaddr.sin_family= AF_INET;
+    cnt_stat = connect(remoteSocket, (struct sockaddr *) &servaddr, sizeof(servaddr));
+    if (cnt_stat < 0) {
+        printf("Remote connect failed.\n");
+        return -1;
+    }
+    return remoteSocket;
 }
 
 //return 0:terminated by the user;return -1:network problem;return 1:forbidden request type;return 2:forbidden file type;
 int singleConnect::http_trans(int clifd, int servfd)
 {
-	int maxfdp, length;
-	fd_set rset;
+    int maxfdp, length;
+    fd_set rset;
     struct timeval tv;
-	char cli_buf[MAXLINE];
+    char cli_buf[MAXLINE];
     char* serv_buf;
     char* serv_content;
     struct http_response_head *response_head_offsets = new http_response_head;
@@ -379,22 +326,22 @@ int singleConnect::http_trans(int clifd, int servfd)
 
     tv.tv_sec = 1;
     tv.tv_usec = 0;
-	maxfdp=(clifd>=servfd?clifd:servfd ) + 1;
-    while(running)
-	{
-		FD_ZERO(&rset);
-		FD_SET( clifd,&rset );
-		FD_SET( servfd,&rset );
+    maxfdp=(clifd>=servfd?clifd:servfd ) + 1;
+    while(arg.flag)
+    {
+        FD_ZERO(&rset);
+        FD_SET( clifd,&rset );
+        FD_SET( servfd,&rset );
 
         if(select( maxfdp,&rset,nullptr,nullptr,&tv ) <= 0){
             //printf("server error.\n");
-			continue;
-		}
+            continue;
+        }
 
-		if( FD_ISSET(clifd,&rset))
-		{
-			int s;
-			length = read(clifd,cli_buf,MAXLINE);
+        if( FD_ISSET(clifd,&rset))
+        {
+            int s;
+            length = read(clifd,cli_buf,MAXLINE);
             if( length <= 0 ) return length;
             printf("received a message from client socket %d, to server socket %d, length:%d.\n", clifd, servfd, length);
             c1 = strstr(cli_buf, "\r\n");
@@ -404,28 +351,28 @@ int singleConnect::http_trans(int clifd, int servfd)
                 strncpy(request, cli_buf, c1 - cli_buf);
                 request[c1 - cli_buf] = '\0';
                 for (int i = 0; i < 9;i++){
-                    if (global_argument.method_banned[i]){
+                    if (arg.method_banned[i]){
                         switch (i){
                         case 0:if (strstr(request, "GET")){
                                 fprintf(f, "GET method monitored!\n");
                                 close(clifd);
                                 close(servfd);
                                 return 1;
-                        }
+                            }
                             break;
                         case 1:if (strstr(request, "HEAD")){
                                 fprintf(f, "HEAD method monitored!\n");
                                 close(clifd);
                                 close(servfd);
                                 return 1;
-                        }
+                            }
                             break;
                         case 2:if (strstr(request, "POST")){
-                            fprintf(f, "POST method monitored!\n");
-                            close(clifd);
-                            close(servfd);
-                            return 1;
-                        }
+                                fprintf(f, "POST method monitored!\n");
+                                close(clifd);
+                                close(servfd);
+                                return 1;
+                            }
                             break;
                         case 3:if (strstr(request, "PUT")){
                                 fprintf(f, "PUT method monitored!\n");
@@ -468,11 +415,11 @@ int singleConnect::http_trans(int clifd, int servfd)
                 }
             }
             if((s = send( servfd,cli_buf,length,0)) <= 0) {
-				printf("send to server returns %d, error code %d.\n", s, errno);
+                printf("send to server returns %d, error code %d.\n", s, errno);
                 break;
-			}
-		}
-		if( FD_ISSET(servfd,&rset) ){
+            }
+        }
+        if( FD_ISSET(servfd,&rset) ){
             length = tcp_receive(servfd, serv_buf, serv_content, response_head_offsets);
             printf("received a message to client socket %d, from server socket %d, length:%d.\n", clifd, servfd, length);
             //printf("%s\n", serv_buf);
@@ -483,101 +430,101 @@ int singleConnect::http_trans(int clifd, int servfd)
                 field = (char*)malloc(response_head_offsets->content_type_len + 1);
                 strncpy(field, serv_buf + response_head_offsets->content_type_offset, response_head_offsets->content_type_len);
                 field[response_head_offsets->content_type_len] = '\0';
-                    for (int i = 0; i < 3;i++){
-                        if (global_argument.file_type[i]){
-                            switch (i){
-                            case 0:if (strstr(field, "application/pdf")){
-                                    fprintf(f, "pdf downloading monitored!\n");
-                                    if (global_argument.file_type[i] == 2){
-                                        lseek(global_argument.fd[i], (off_t)0, SEEK_SET);
-                                        length = global_argument.nSize[i]+ (serv_content - serv_buf);
-                                        sprintf(tmp, "%d", global_argument.nSize[i]);
-                                        serv_buf = (char*)realloc(serv_buf, global_argument.nSize[i] + (serv_content - serv_buf)
-                                                                  - response_head_offsets->content_len_len + strlen(tmp));
-                                        if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
-                                                != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
-                                        {
-                                            memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
-                                            serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
-                                            length += strlen(tmp) - response_head_offsets->content_len_len;
-                                        }
-                                        memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
-                                        read(global_argument.fd[i], serv_content, global_argument.nSize[i]);
-                                        i = 3;
+                for (int i = 0; i < 3;i++){
+                    if (arg.file_type[i]){
+                        switch (i){
+                        case 0:if (strstr(field, "application/pdf")){
+                                fprintf(f, "pdf downloading monitored!\n");
+                                if (arg.file_type[i] == 2){
+                                    lseek(arg.fd[i], (off_t)0, SEEK_SET);
+                                    length = arg.nSize[i]+ (serv_content - serv_buf);
+                                    sprintf(tmp, "%d", arg.nSize[i]);
+                                    serv_buf = (char*)realloc(serv_buf, arg.nSize[i] + (serv_content - serv_buf)
+                                                              - response_head_offsets->content_len_len + strlen(tmp));
+                                    if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
+                                            != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
+                                    {
+                                        memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
+                                        serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
+                                        length += strlen(tmp) - response_head_offsets->content_len_len;
                                     }
-                                    else{
-                                        close(clifd);
-                                        close(servfd);
-                                        return 2;
-                                    }
+                                    memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
+                                    read(arg.fd[i], serv_content, arg.nSize[i]);
+                                    i = 3;
                                 }
-                                break;
-                            case 2:if (strstr(field, "application/msword") || strstr(field, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")){
-                                    fprintf(f, "msword downloading monitored!\n");
-                                    if (global_argument.file_type[i] == 2){
-                                        lseek(global_argument.fd[i], (off_t)0, SEEK_SET);
-                                        length = global_argument.nSize[i]+ (serv_content - serv_buf);
-                                        sprintf(tmp, "%d", global_argument.nSize[i]);
-                                        serv_buf = (char*)realloc(serv_buf, global_argument.nSize[i] + (serv_content - serv_buf)
-                                                                  - response_head_offsets->content_len_len + strlen(tmp));
-                                        if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
-                                                != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
-                                        {
-                                            memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
-                                            serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
-                                            length += strlen(tmp) - response_head_offsets->content_len_len;
-                                        }
-                                        memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
-                                        read(global_argument.fd[i], serv_content, global_argument.nSize[i]);
-                                        i = 3;
-                                    }
-                                    else{
-                                        close(clifd);
-                                        close(servfd);
-                                        return 2;
-                                    }
-
+                                else{
+                                    close(clifd);
+                                    close(servfd);
+                                    return 2;
                                 }
-                                break;
-                            case 1:if (strstr(field, "application/vnd.ms-excel") || strstr(field, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")){
-                                    fprintf(f, "msexcel downloading monitored!\n");
-                                    if (global_argument.file_type[i] == 2){
-                                        lseek(global_argument.fd[i], (off_t)0, SEEK_SET);
-                                        length = global_argument.nSize[i]+ (serv_content - serv_buf);
-                                        sprintf(tmp, "%d", global_argument.nSize[i]);
-                                        serv_buf = (char*)realloc(serv_buf, global_argument.nSize[i] + (serv_content - serv_buf)
-                                                                  - response_head_offsets->content_len_len + strlen(tmp));
-                                        if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
-                                                != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
-                                        {
-                                            memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
-                                            serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
-                                            length += strlen(tmp) - response_head_offsets->content_len_len;
-                                        }
-                                        memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
-                                        read(global_argument.fd[i], serv_content, global_argument.nSize[i]);
-                                        i = 3;
-                                    }
-                                    else{
-                                        close(clifd);
-                                        close(servfd);
-                                        return 2;
-                                    }
-                                }
-                                break;
                             }
+                            break;
+                        case 2:if (strstr(field, "application/msword") || strstr(field, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")){
+                                fprintf(f, "msword downloading monitored!\n");
+                                if (arg.file_type[i] == 2){
+                                    lseek(arg.fd[i], (off_t)0, SEEK_SET);
+                                    length = arg.nSize[i]+ (serv_content - serv_buf);
+                                    sprintf(tmp, "%d", arg.nSize[i]);
+                                    serv_buf = (char*)realloc(serv_buf, arg.nSize[i] + (serv_content - serv_buf)
+                                                              - response_head_offsets->content_len_len + strlen(tmp));
+                                    if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
+                                            != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
+                                    {
+                                        memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
+                                        serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
+                                        length += strlen(tmp) - response_head_offsets->content_len_len;
+                                    }
+                                    memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
+                                    read(arg.fd[i], serv_content, arg.nSize[i]);
+                                    i = 3;
+                                }
+                                else{
+                                    close(clifd);
+                                    close(servfd);
+                                    return 2;
+                                }
+
+                            }
+                            break;
+                        case 1:if (strstr(field, "application/vnd.ms-excel") || strstr(field, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")){
+                                fprintf(f, "msexcel downloading monitored!\n");
+                                if (arg.file_type[i] == 2){
+                                    lseek(arg.fd[i], (off_t)0, SEEK_SET);
+                                    length = arg.nSize[i]+ (serv_content - serv_buf);
+                                    sprintf(tmp, "%d", arg.nSize[i]);
+                                    serv_buf = (char*)realloc(serv_buf, arg.nSize[i] + (serv_content - serv_buf)
+                                                              - response_head_offsets->content_len_len + strlen(tmp));
+                                    if ((c1 = serv_buf + response_head_offsets->content_len_offset + strlen(tmp))
+                                            != (c2 = serv_buf + response_head_offsets->content_len_offset + response_head_offsets->content_len_len))
+                                    {
+                                        memmove(c1, c2, serv_content - serv_buf - response_head_offsets->content_len_offset - response_head_offsets->content_len_len);
+                                        serv_content = serv_content + strlen(tmp) - response_head_offsets->content_len_len;
+                                        length += strlen(tmp) - response_head_offsets->content_len_len;
+                                    }
+                                    memcpy(serv_buf + response_head_offsets->content_len_offset, tmp, strlen(tmp));
+                                    read(arg.fd[i], serv_content, arg.nSize[i]);
+                                    i = 3;
+                                }
+                                else{
+                                    close(clifd);
+                                    close(servfd);
+                                    return 2;
+                                }
+                            }
+                            break;
                         }
                     }
-                    free(field);
                 }
-                fprintf(f, "s-c\n%s", response_head);
-                if(send(clifd,serv_buf,length,0) <= 0) {
-                    printf("send error. \n");
-                    break;
-                }
-                free(serv_buf);
+                free(field);
             }
-         }
+            fprintf(f, "s-c\n%s", response_head);
+            if(send(clifd,serv_buf,length,0) <= 0) {
+                printf("send error. \n");
+                break;
+            }
+            free(serv_buf);
+        }
+    }
     free(response_head_offsets);
     fclose(f);
     return 0;

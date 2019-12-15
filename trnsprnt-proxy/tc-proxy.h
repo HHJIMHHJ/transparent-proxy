@@ -6,13 +6,13 @@
 #include <QThread>
 #include <sys/types.h>
 #include <unistd.h>
-#include <fcntl.h>
 
 struct argument
 {
 public:
     unsigned short port;
-    char client_ip[16];
+    char** client_ip_list;
+    int client_ip_num;
     char** websites;
     int website_num;
 
@@ -22,21 +22,30 @@ public:
     char* file_names[3];
     int fd[3];
     int nSize[3];
+
+    bool flag;
 };
 
-class tcProxy: public QObject
+class abstractThread: public QObject
 {
     Q_OBJECT
 public:
-    bool flag;
-    static QVector<int> openned_sockets;
+    static QVector<unsigned int> allowed_ip_address;
+    static argument arg;
+};
+class tcProxy: public QObject
+{
+    Q_OBJECT
 public slots:
-    void* test(argument*);
+    void* main_thread();
 private:
     int listen_socket;
     int checkclient(unsigned int cli_addr);
+    int get_allowed_ip_list();
+    int get_client_ip_inet();
 signals:
     void* debug_msg(QString);
+    void error_msg(QString);
     void* start_single_connect(int);
 };
 
@@ -49,7 +58,6 @@ public:
     char lan_ip[16];
     char wan_ip[16];
     char dns_ip[16];
-    bool flag;
 public slots:
     void dns_trans();
 signals:
@@ -62,14 +70,13 @@ class singleConnect: public QThread
     Q_OBJECT
 public:
     int clifd;
-    static bool running;
-void run() override;
-int dns_trans(int clifd);
-int http_trans(int clifd,int servfd);
-int tcp_receive(int fd, char* &buf, char* &content, struct http_response_head* head_offsets);
-int checkserver(unsigned int serv_addr);
+    void run() override;
+    int http_trans(int clifd,int servfd);
+    int tcp_receive(int fd, char* &buf, char* &content, struct http_response_head* head_offsets);
+    int checkserver(unsigned int serv_addr);
 signals:
     void* debug_msg(QString);
+    void error_msg(QString);
 };
 
 struct http_response_head{

@@ -47,7 +47,7 @@ private:
     QVector<QThread*> single_connect_threads;
     QString file_names[3];
 signals:
-    void* start_proxy(argument *);
+    void* start_proxy();
     void* close_proxy();
     void* single_connect_start(int);
 
