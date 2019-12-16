@@ -13,39 +13,34 @@ public:
     unsigned short port;
     char** client_ip_list;
     int client_ip_num;
-    char** websites;
+    char** website_list;
     int website_num;
 
     bool method_banned[9];
     int url_allowed;
     int file_type[3];
     char* file_names[3];
-    int fd[3];
-    int nSize[3];
+    int fd[3];//file descriptor
+    int nSize[3];//file size
 
-    bool flag;
+    bool flag;//manage the running states of all subthreads
+    bool black_or_white;//a black ip list or white ip list
 };
 
-class abstractThread: public QObject
-{
-    Q_OBJECT
-public:
-    static QVector<unsigned int> allowed_ip_address;
-    static argument arg;
-};
-class tcProxy: public QObject
+class mainClass: public QObject
 {
     Q_OBJECT
 public slots:
-    void* main_thread();
+    void main_thread();
 private:
     int listen_socket;
-    int checkclient(unsigned int cli_addr);
-    int get_allowed_ip_list();
-    int get_client_ip_inet();
+    int check_client(unsigned int);
+    int get_server_ip_list();
+    int get_allowed_client_ip_list();
 signals:
-    void* debug_msg(QString);
+    void debug_msg(QString);
     void error_msg(QString);
+    void important_msg(QString);
     void* start_single_connect(int);
 };
 
@@ -53,16 +48,15 @@ class dns: public QObject
 {
     Q_OBJECT
 public:
-    unsigned short port;
-    char client_ip[16];
     char lan_ip[16];
     char wan_ip[16];
     char dns_ip[16];
 public slots:
     void dns_trans();
 signals:
-    void* debug_msg(QString);
+    void debug_msg(QString);
     void error_msg(QString);
+    void important_msg(QString);
 };
 
 class singleConnect: public QThread
@@ -70,13 +64,15 @@ class singleConnect: public QThread
     Q_OBJECT
 public:
     int clifd;
+private:
     void run() override;
-    int http_trans(int clifd,int servfd);
-    int tcp_receive(int fd, char* &buf, char* &content, struct http_response_head* head_offsets);
-    int checkserver(unsigned int serv_addr);
+    int http_trans(int,int);
+    int http_packet_reassemble(int, char* &, char* &, struct http_response_head*);
+    int check_server(unsigned int);
 signals:
-    void* debug_msg(QString);
+    void debug_msg(QString);
     void error_msg(QString);
+    void important_msg(QString);
 };
 
 struct http_response_head{

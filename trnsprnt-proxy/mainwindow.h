@@ -20,8 +20,8 @@ public:
 
 private slots:
 
-    void on_pushButton_toggled(bool checked);
-    void print(QString);
+    void on_pushButton_toggled(bool);
+    void print_debug_msg(QString);
     void create_single_connect(int);
     void single_connect_destroy();
 
@@ -31,18 +31,19 @@ private slots:
 
     void on_pushButton_doc_clicked();
 
-    void on_pdf_currentIndexChanged(int index);
+    void on_pdf_currentIndexChanged(int);
 
-    void on_xls_currentIndexChanged(int index);
+    void on_xls_currentIndexChanged(int);
 
-    void on_doc_currentIndexChanged(int index);
+    void on_doc_currentIndexChanged(int);
     void error_handle(QString);
+    void print_important_message(QString);
 
 private:
     Ui::MainWindow *ui;
     QThread tc_proxy_thread;
     QThread dns_trans_thread;
-    tcProxy* tc_proxy;
+    mainClass* tc_proxy;
     dns* dns_trans;
     QVector<QThread*> single_connect_threads;
     QString file_names[3];
