@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include <iostream>
+#include <fstream>
 #include <fcntl.h>
 
 argument arg;
@@ -35,12 +36,14 @@ MainWindow::MainWindow(QWidget *parent, int argc, char** argv)
     connect(dns_trans, &dns::debug_msg, this, &MainWindow::print_debug_msg);
     connect(dns_trans, &dns::error_msg, this, &MainWindow::error_handle);
     connect(dns_trans, &dns::important_msg, this, &MainWindow::print_important_message);
+    log_file = open("log", O_CREAT|O_WRONLY, S_IRWXU);
     tc_proxy_thread.start();
     dns_trans_thread.start();
 }
 
 MainWindow::~MainWindow()
 {
+    ::close(log_file);
     delete ui;
 }
 
@@ -133,6 +136,9 @@ void MainWindow::on_pushButton_toggled(bool checked)
 void MainWindow::print_debug_msg(QString msg)
 {//print debug message
     ui->textEdit->append(msg);
+    std::string s = msg.toStdString();
+    write(log_file, s.c_str(), msg.length());
+    write(log_file, "\n", 1);
 }
 
 void MainWindow::error_handle(QString msg)

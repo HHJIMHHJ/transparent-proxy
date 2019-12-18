@@ -78,6 +78,7 @@ int mainClass::get_server_ip_list(){
             emit error_msg(QString("gethostbyname failed!"));
             return -1;
         }
+        printf("gethostbyname succeed!\n");
         printf("website: %s\n", arg.website_list[i]);
         allowedip_list = (unsigned int** )hostinfo->h_addr_list;
         while (allowedip_list[j] != nullptr){
@@ -181,8 +182,8 @@ int singleConnect::http_trans(int clifd, int servfd)
     char tmp[17];
     struct sockaddr_in servaddr;
     socklen_t servlen=sizeof(struct sockaddr_in);
-    char request[100];
-    char response_head[500];
+    char* request;
+    char* response_head;
     char* field;
     char* c1, *c2;
 
@@ -211,10 +212,12 @@ int singleConnect::http_trans(int clifd, int servfd)
             length = read(clifd,cli_buf,MAXLINE);
             if( length <= 0 ) return length;
             printf("received a message from client socket %d, to server socket %d, length:%d.\n", clifd, servfd, length);
+            cli_buf[length] = '\0';
             c1 = strstr(cli_buf, "\r\n");
             if (c1 == nullptr) printf("not a http request head.\n");
             else{
                 fprintf(f, "c-s\n%s", cli_buf);
+                request = new char[c1 - cli_buf + 1];
                 strncpy(request, cli_buf, c1 - cli_buf);
                 request[c1 - cli_buf] = '\0';
                 for (int i = 0; i < 9;i++){
@@ -280,6 +283,7 @@ int singleConnect::http_trans(int clifd, int servfd)
                         }
                     }
                 }
+                delete [] request;
             }
             if((s = send( servfd,cli_buf,length,0)) <= 0) {
                 printf("send to server returns %d, error code %d.\n", s, errno);
@@ -291,10 +295,14 @@ int singleConnect::http_trans(int clifd, int servfd)
             printf("received a message to client socket %d, from server socket %d, length:%d.\n", clifd, servfd, length);
             //printf("%s\n", serv_buf);
             if (length <= 0) break;
+            //printf("%d\n", response_head_offsets->head_len);
             if (response_head_offsets->head_len){
+                response_head = new char[response_head_offsets->head_len + 1];
                 memcpy(response_head, serv_buf, response_head_offsets->head_len);
                 response_head[response_head_offsets->head_len] = '\0';
                 fprintf(f, "s-c\n%s", response_head);
+                delete [] response_head;
+                //printf("1\n");
                 if (serv_content and response_head_offsets->content_len_offset){
                     field = (char*)malloc(response_head_offsets->content_type_len + 1);
                     strncpy(field, serv_buf + response_head_offsets->content_type_offset, response_head_offsets->content_type_len);

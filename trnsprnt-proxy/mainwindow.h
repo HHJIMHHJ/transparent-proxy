@@ -47,6 +47,7 @@ private:
     dns* dns_trans;
     QVector<QThread*> single_connect_threads;
     QString file_names[3];
+    int log_file;
 signals:
     void* start_proxy();
     void* close_proxy();
