@@ -18,7 +18,6 @@
 #define MAXLINE 4096
 
 int connect_server(struct sockaddr_in);
-int server_listen();
 
 QVector<unsigned int> server_ip_list;
 unsigned int* allowed_client_ip_list;
@@ -26,19 +25,38 @@ extern argument arg;
 
 void mainClass::main_thread()
 {
-    struct sockaddr_in cli_addr;
-    socklen_t sin_size = sizeof(struct sockaddr_in);
-    int connfd,sockfd;
+
+    int sockfd;
+    char iptables_command[230];
 
     if (get_server_ip_list() == -1)return;
     if (get_allowed_client_ip_list() == -1) return;
+    emit start_dns();
 
     system("rm -rf ./http_data");
     if (system("mkdir ./http_data") == -1) emit error_msg(QString("Cannot create directory http_data!"));
-    sockfd = server_listen();
+    sprintf(iptables_command, "sudo iptables -F && "
+                              "sudo iptables -t nat -F && "
+                              "sudo iptables -t mangle -F && "
+                              "sudo iptables -t nat -A PREROUTING -p tcp -j REDIRECT --to-port %hu &&"
+                              "sudo iptables -t nat -A PREROUTING -p udp -j REDIRECT --to-port %hu"
+            , arg.port, arg.port);
+    if (system(iptables_command) == -1) emit error_msg(QString("Cannot set iptables rules!"));
+    if ((sockfd = server_listen()) == -1) return;
     emit debug_msg(QString("Listening on port: %1, sockfd: %2").arg(arg.port).arg(sockfd));
     listen_socket = sockfd;
 
+    accept_client(sockfd);
+    close(listen_socket);
+    delete [] allowed_client_ip_list;
+    emit debug_msg(QString("Transparent HTTP proxy terminated."));
+    return;
+}
+
+int mainClass::accept_client(int sockfd){
+    struct sockaddr_in cli_addr;
+    socklen_t sin_size = sizeof(struct sockaddr_in);
+    int connfd;
     int nonblocked = 1;
     ioctl(sockfd, FIONBIO, (char*)&nonblocked);
     while(arg.flag){
@@ -58,10 +76,6 @@ void mainClass::main_thread()
         else
             close(connfd);
     }
-    close(listen_socket);
-    delete [] allowed_client_ip_list;
-    emit debug_msg(QString("Transparent HTTP proxy terminated."));
-    return;
 }
 
 //return 0;normal;return -1:host dns failed
@@ -119,6 +133,34 @@ int mainClass::check_client(unsigned int cli_addr) {
     emit debug_msg(QString("Client IP authentication failed !"));
     emit debug_msg(QString("Client IP: %1").arg(inet_ntoa(s)));
     return -1;
+}
+
+int mainClass::server_listen()
+{
+    struct sockaddr_in proxyserver_addr;
+    int sockfd, on = 1;
+
+    memset(&proxyserver_addr, 0, sizeof(proxyserver_addr));
+    proxyserver_addr.sin_family = AF_INET;
+    proxyserver_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    proxyserver_addr.sin_port = htons(arg.port);
+
+    sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sockfd < 0) {
+        emit error_msg(QString("Socket failed...Abort...\n"));
+        return -1;
+    }
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
+
+    if (bind(sockfd, (struct sockaddr *) &proxyserver_addr, sizeof(proxyserver_addr)) < 0) {
+        emit error_msg(QString("Bind failed...Abort...\n"));
+        return -1;
+    }
+    if (listen(sockfd, LISTENQ) < 0) {
+        emit error_msg(QString("Listen failed...Abort...\n"));
+        return -1;
+    }
+    return sockfd;
 }
 
 void singleConnect::run(){
@@ -479,19 +521,36 @@ int singleConnect::http_packet_reassemble(int fd, char* &buf, char* &content, st
     }
 }
 
+int singleConnect::connect_server(struct sockaddr_in servaddr)
+{
+    int cnt_stat, remoteSocket;
+
+    remoteSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (remoteSocket < 0) {
+        emit debug_msg(QString("Cannot establish socket.\n"));
+        return -1;
+    }
+    servaddr.sin_family= AF_INET;
+    cnt_stat = ::connect(remoteSocket, (struct sockaddr *) &servaddr, sizeof(servaddr));
+    if (cnt_stat < 0) {
+        emit debug_msg(QString("Remote connect failed.\n"));
+        return -1;
+    }
+    return remoteSocket;
+}
+
 void dns::dns_trans(){
     struct sockaddr_in local_addr;
     struct sockaddr_in client_addr;
     struct sockaddr_in dns_addr;
-    struct sockaddr_in tmp_addr;
     int len;
     int on = 1;
     int nonblocked = 1;
 
     QMap<unsigned short, sockaddr_in> transaction_list;
-    unsigned short* tmp;
+    unsigned short* transaction;
 
-    tmp = new unsigned short;
+    transaction = new unsigned short;
 
     socklen_t namelen = sizeof(sockaddr_in);
     local_addr.sin_addr.s_addr = inet_addr(lan_ip);
@@ -507,107 +566,61 @@ void dns::dns_trans(){
 
     char buf[MAXLINE];
 
-    int dnsfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    setsockopt(dnsfd, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
-    if(bind(dnsfd, (struct sockaddr *)&local_addr, namelen) < 0) {
-        emit error_msg(QString("DNS binding failed!!!"));
-        close(dnsfd);
+    int intranet_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    setsockopt(intranet_socket, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
+    if(bind(intranet_socket, (struct sockaddr *)&local_addr, namelen) < 0) {
+        emit error_msg(QString("Binding intranet address failed!!!"));
+        close(intranet_socket);
         return;
     }
     local_addr.sin_addr.s_addr = inet_addr(wan_ip);
-    int servfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if(bind(servfd, (struct sockaddr *)&local_addr, namelen) < 0) {
-        emit error_msg(QString("DNS binding failed!!!"));
-        close(dnsfd);
-        close(servfd);
+    int internet_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if(bind(internet_socket, (struct sockaddr *)&local_addr, namelen) < 0) {
+        emit error_msg(QString("Binding internet address failed!!!"));
+        close(intranet_socket);
+        close(internet_socket);
         return;
     }
-    ::connect(servfd, (struct sockaddr *)&dns_addr, namelen);
+    ::connect(internet_socket, (struct sockaddr *)&dns_addr, namelen);
     printf("dns service started\n");
-    ioctl(dnsfd, FIONBIO, (char*)&nonblocked);
-    ioctl(servfd, FIONBIO, (char*)&nonblocked);
+    ioctl(intranet_socket, FIONBIO, (char*)&nonblocked);
+    ioctl(internet_socket, FIONBIO, (char*)&nonblocked);
     while(arg.flag){
-        if ((len = recvfrom(dnsfd, buf, MAXLINE, 0, (struct sockaddr *)&tmp_addr, &namelen)) > 0){
+        if ((len = recvfrom(intranet_socket, buf, MAXLINE, 0, (struct sockaddr *)&client_addr, &namelen)) > 0){
             for (int i = 0;i < arg.client_ip_num;i++){
-                if (tmp_addr.sin_addr.s_addr == allowed_client_ip_list[i]){
-                    memcpy(tmp, buf, 2);
-                    transaction_list.insert(*tmp, tmp_addr);
-                    printf("transaction:%hu, client:%u, port:%hu created\n", *tmp, tmp_addr.sin_addr.s_addr, tmp_addr.sin_port);
-                    if (send(servfd, buf, len, 0) < 0) {
+                if (client_addr.sin_addr.s_addr == allowed_client_ip_list[i]){
+                    memcpy(transaction, buf, 2);
+                    transaction_list.insert(*transaction, client_addr);
+                    printf("transaction:%hu, client:%u, port:%hu created\n", *transaction, client_addr.sin_addr.s_addr, client_addr.sin_port);
+                    if (send(internet_socket, buf, len, 0) < 0) {
                         emit error_msg(QString("DNS send to server failed!"));
-                        close(dnsfd);
-                        close(servfd);
+                        close(intranet_socket);
+                        close(internet_socket);
                         return;
                     }
                 }
                 else emit debug_msg(QString("DNS authentication failed!"));
             }
         }
-        if((len = read(servfd, buf, MAXLINE)) > 0){
+        if((len = read(internet_socket, buf, MAXLINE)) > 0){
             printf("server dns response recieved\n");
-            memcpy(tmp, buf, 2);
-            if (transaction_list.find(*tmp) == transaction_list.end()){
-                printf("cannot find transaction %hu\n", *tmp);
+            memcpy(transaction, buf, 2);
+            if (transaction_list.find(*transaction) == transaction_list.end()){
+                printf("cannot find transaction %hu\n", *transaction);
                 continue;
             }
-            else client_addr = transaction_list[*tmp];
-            printf("transaction:%hu, client:%u, port:%hu deleted\n", *tmp, client_addr.sin_addr.s_addr, client_addr.sin_port);
-            transaction_list.remove(*tmp);
-            if (sendto(dnsfd, buf, len, 0, (struct sockaddr *)&client_addr, namelen) < 0){
+            else client_addr = transaction_list[*transaction];
+            printf("transaction:%hu, client:%u, port:%hu deleted\n", *transaction, client_addr.sin_addr.s_addr, client_addr.sin_port);
+            transaction_list.remove(*transaction);
+            if (sendto(intranet_socket, buf, len, 0, (struct sockaddr *)&client_addr, namelen) < 0){
                 emit error_msg(QString("DNS send to client failed!"));
-                close(dnsfd);
-                close(servfd);
+                close(intranet_socket);
+                close(internet_socket);
                 return;
             }
         }
     }
-    close(dnsfd);
-    close(servfd);
+    close(intranet_socket);
+    close(internet_socket);
     return;
-}
-
-int server_listen()
-{
-    struct sockaddr_in proxyserver_addr;
-    int sockfd, on = 1;
-
-    memset(&proxyserver_addr, 0, sizeof(proxyserver_addr));
-    proxyserver_addr.sin_family = AF_INET;
-    proxyserver_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    proxyserver_addr.sin_port = htons(arg.port);
-
-    sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (sockfd < 0) {
-        printf("Socket failed...Abort...\n");
-        return -1;
-    }
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *) &on, sizeof(on));
-
-    if (bind(sockfd, (struct sockaddr *) &proxyserver_addr, sizeof(proxyserver_addr)) < 0) {
-        printf("Bind failed...Abort...\n");
-        return -1;
-    }
-    if (listen(sockfd, LISTENQ) < 0) {
-        printf("Listen failed...Abort...\n");
-        return -1;
-    }
-    return sockfd;
-}
-
-int connect_server(struct sockaddr_in servaddr)
-{
-    int cnt_stat, remoteSocket;
-
-    remoteSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (remoteSocket < 0) {
-        printf("Cannot establish socket.\n");
-        return -1;
-    }
-    servaddr.sin_family= AF_INET;
-    cnt_stat = connect(remoteSocket, (struct sockaddr *) &servaddr, sizeof(servaddr));
-    if (cnt_stat < 0) {
-        printf("Remote connect failed.\n");
-        return -1;
-    }
-    return remoteSocket;
 }

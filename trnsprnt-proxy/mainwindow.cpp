@@ -11,7 +11,7 @@ MainWindow::MainWindow(QWidget *parent, int argc, char** argv)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    ui->website->setText("jwc.sjtu.edu.cn|www.baidu.com|www.sohu.com|www.qq.com|weibo.com|www.sina.com.cn|tv.sohu.com|www.163.com|www.douban.com|www.iqiyi.com|"
+    ui->website->setText("www.baidu.com|www.sohu.com|www.qq.com|weibo.com|www.sina.com.cn|tv.sohu.com|www.163.com|www.douban.com|www.iqiyi.com|"
                          "www.sjtu.edu.cn|www.tianya.cn|bbs.sjtu.edu.cn");
     ui->client_IP->setText("192.168.88.2|192.168.88.3");
     ui->listen_port->setText("8888");
@@ -32,7 +32,8 @@ MainWindow::MainWindow(QWidget *parent, int argc, char** argv)
     connect(tc_proxy, &mainClass::start_single_connect, this, &MainWindow::create_single_connect);
     connect(tc_proxy, &mainClass::error_msg, this, &MainWindow::error_handle);
     connect(tc_proxy, &mainClass::important_msg, this, &MainWindow::print_important_message);
-    connect(this, &MainWindow::start_proxy, dns_trans, &dns::dns_trans);
+    //connect(this, &MainWindow::start_proxy, dns_trans, &dns::dns_trans);
+    connect(tc_proxy, &mainClass::start_dns, dns_trans, &dns::dns_trans);
     connect(dns_trans, &dns::debug_msg, this, &MainWindow::print_debug_msg);
     connect(dns_trans, &dns::error_msg, this, &MainWindow::error_handle);
     connect(dns_trans, &dns::important_msg, this, &MainWindow::print_important_message);
@@ -50,20 +51,25 @@ MainWindow::~MainWindow()
 void MainWindow::on_pushButton_toggled(bool checked)
 {
     if (checked){
-
         QStringList tmp = ui->website->text().split('|');
         arg.website_list = new char*[tmp.size()];
         arg.website_num = tmp.size();
         for (int i = 0;i < tmp.size(); i++){
-            arg.website_list[i] = new char[tmp.at(i).length() + 1];
-            memcpy(arg.website_list[i], tmp.at(i).toStdString().c_str(), tmp.at(i).length() + 1);
+            if (tmp.at(i).length() == 0) arg.website_num--;
+            else {
+                arg.website_list[i] = new char[tmp.at(i).length() + 1];
+                memcpy(arg.website_list[i], tmp.at(i).toStdString().c_str(), tmp.at(i).length() + 1);
+            }
         }
         tmp = ui->client_IP->text().split('|');
         arg.client_ip_list = new char*[tmp.size()];
         arg.client_ip_num = tmp.size();
         for (int i = 0;i < tmp.size(); i++){
-            arg.client_ip_list[i] = new char[tmp.at(i).length() + 1];
-            memcpy(arg.client_ip_list[i], tmp.at(i).toStdString().c_str(), tmp.at(i).length() + 1);
+            if (tmp.at(i).length() == 0) arg.client_ip_num--;
+            else{
+                arg.client_ip_list[i] = new char[tmp.at(i).length() + 1];
+                memcpy(arg.client_ip_list[i], tmp.at(i).toStdString().c_str(), tmp.at(i).length() + 1);
+            }
         }
 
         arg.port = ui->listen_port->text().toUShort();
@@ -113,6 +119,7 @@ void MainWindow::on_pushButton_toggled(bool checked)
         emit start_proxy();
     }
     else {
+        print_debug_msg(QString("terminated"));
         arg.flag = false;
         for (int i = 0;i < arg.website_num;i++){
             delete [] arg.website_list[i];

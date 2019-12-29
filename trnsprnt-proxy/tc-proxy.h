@@ -17,7 +17,6 @@ public:
     int website_num;
 
     bool method_banned[9];
-    int url_allowed;
     int file_type[3];
     char* file_names[3];
     int fd[3];//file descriptor
@@ -37,11 +36,14 @@ private:
     int check_client(unsigned int);
     int get_server_ip_list();
     int get_allowed_client_ip_list();
+    int server_listen();
+    int accept_client(int);
 signals:
     void debug_msg(QString);
     void error_msg(QString);
     void important_msg(QString);
     void* start_single_connect(int);
+    void start_dns();
 };
 
 class dns: public QObject
@@ -69,6 +71,7 @@ private:
     int http_trans(int,int);
     int http_packet_reassemble(int, char* &, char* &, struct http_response_head*);
     int check_server(unsigned int);
+    int connect_server(struct sockaddr_in servaddr);
 signals:
     void debug_msg(QString);
     void error_msg(QString);
