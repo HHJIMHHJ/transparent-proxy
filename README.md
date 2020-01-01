@@ -1,10 +1,9 @@
 # transparent-proxy
 - download release.zip
-- set the iptables rules:
+- run trnsprnt-proxy.sh as administrator:
 ```shell
-sudo iptables -t nat -A PREROUTING -p tcp -j REDIRECT --to-port [port]
-sudo iptables -t nat -A PREROUTING -p udp -j REDIRECT --to-port [port]
+sudo trnsprnt-proxy.sh
 ```
-- run trnsprnt-proxy.sh
-- filling the ip addresses of your firewall host and the port number in the iptables rules
+- fill the ip addresses of your firewall host and the port number and then set the DNS server of clients to the firewall host
 - click start
+- click start again to terminate the proxy
